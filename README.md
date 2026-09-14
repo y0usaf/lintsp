@@ -126,3 +126,9 @@ and defaults. Three are **off by default** (marked below).
 
 See `REPORT.md` for the engineering record and the corpus measurements behind
 these defaults, and `STATUS.md` for the running log.
+
+## License
+
+AGPL-3.0-only. See [LICENSE](./LICENSE).
+
+Copyright (C) 2026 y0usaf
