@@ -1,0 +1,17 @@
+# Build output: never commit a 100 MB SBCL image or a store symlink.
+result
+result-*
+/lintsp
+
+# Local build convenience file (absolute path to the sbcl used to build).
+.sbcl-path
+
+# Compiled Lisp artifacts.
+*.fasl
+*.dx64fsl
+*.lx64fsl
+
+# Cache and scratch directories.
+.cache/
+*.local/
+.qlot/
