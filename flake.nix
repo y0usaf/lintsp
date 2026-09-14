@@ -34,6 +34,7 @@
           meta = {
             description = "Reader-only Common Lisp linter: parses your source with the host reader and reports structural pathologies";
             mainProgram = "lintsp";
+            license = pkgs.lib.licenses.agpl3Only;
             platforms = pkgs.lib.platforms.unix;
           };
         };
