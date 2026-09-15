@@ -1,6 +1,98 @@
+# STATUS — dogfooding pass: does it run on a real file? (2026-09-15, DONE)
+
+Edits only inside lintsp. No user project touched. No tests added. Every
+number below is from a run of the built binary (store
+`fk2hh8v8p92cn8d5f1nrn9pmyanfc297-lintsp-0.1.0`).
+
+## Does it run clean on the big file?
+
+Yes. `/home/y0usaf/dev/developing/ash/shell.lisp` is 219,688 bytes /
+4,784 very long lines (not 220k lines — the memory figure was bytes).
+`lintsp check` finished in **0.115 s**, exit 1 (findings), **0 bytes of
+stderr**, no crash. Its own `src/` (7 files, 3,700 lines) likewise.
+
+## Fixes this pass (two commits, both verified by re-run)
+
+- `ffb9f68 fix(reader): read #. as quoted data instead of dropping the
+  form`. `#.` under `*READ-EVAL* NIL` used to error and skip the whole
+  enclosing top-level form — ash's `dt->type` (`case` keys written
+  `#.+dt-dir+`) was invisible to analysis, which is also what made its
+  three dead-definition findings false. A private readtable now reads
+  `#.X` as `(QUOTE X)`: no evaluation, the form survives.
+- `d86d0ec fix(rules): count quoted names as mentions for
+  dead-definition`. A symbol inside `QUOTE` data is not a call site, but
+  a dispatch table selects on it all the same — the rule had flagged all
+  20 `rule-*` functions reachable through lintsp's own quoted
+  `*rule-fns*` alist.
+
+## Findings, before → after the fixes
+
+`check src/` — 345 → **325 findings** (exit 1):
+
+| rule | after | notes |
+|---|---|---|
+| carcdr | 172 | house policy; lintsp's own code doesn't follow it |
+| missing-docstring | 101 | house policy |
+| positional-arity-limit | 29 | house policy |
+| self-concatenating-accumulator | 8 | real quadratic patterns |
+| keyword-quoting | 8 | house policy |
+| dead-definition | **4** | all four verified unreferenced by grep: `ORDER-INDEX`, `CTX-ALL-NODES`, `NODE-STRING-ATOMS`, `RULE-DEFAULT-ON-P` — true positives, real dead code |
+| unused-binding | 1 | real (`dotimes` counter) |
+| quadratic-append | 1 | real |
+| boolean-coercion-in-test | 1 | real |
+
+`check ash/shell.lisp` — 223 → **220 findings** (exit 1):
+
+| rule | after | notes |
+|---|---|---|
+| missing-docstring | 167 | house policy |
+| positional-arity-limit | 19 | house policy |
+| no-defconstant | 11 | house policy |
+| keyword-quoting | 9 | house policy |
+| unused-parameter / unused-binding | 4 / 4 | spot-checked: real |
+| long-function | 3 | real (169-, 155-, 84-line defuns) |
+| self-concatenating-accumulator | 2 | real (string accumulator in loops) |
+| dead-definition | **1** | `+DT-UNKNOWN+`, genuinely unreferenced |
+| reader-error | 0 | was 1; `#.` now reads |
+
+Triage of the delta: 23 clear false positives eliminated (20 quoted
+dispatch-table entries on self, 3 `#.`-shadowed references on ash), 1
+honest coverage note recovered (`dt->type` is now analysed and flagged
+for a missing docstring). Remaining findings are real or intended
+house-policy noise; nothing else looked like a false positive.
+
+## Recommendation: keep dormant, run on demand — do not gate on it
+
+- **Not retire**: it works, it's fast (0.1 s on the largest file), and it
+  found real defects in both targets — four dead functions in lintsp
+  itself and a dead constant in ash.
+- **Not a flake check**: the finding mix is dominated by house-policy
+  notes (288 of 325 on self). Its own source doesn't satisfy its own
+  house rules, so a gate fails on day one unless policy is tuned per
+  project via `.lintsprc` — real config work for a tool nothing invokes.
+  If a gate is ever wanted, the sane subset is the structural rules
+  (`dead-definition`, `unused-*`, `self-concatenating-accumulator`,
+  `quadratic-append`) run on a project that has opted in — and lintsp
+  itself would first need its four genuinely dead functions deleted.
+- **Keep dormant**: value is the occasional audit exactly like this one.
+  `nix run . -- check <path>` already works.
+
+## Known limits surfaced
+
+- `#.X` in an evaluated position (e.g. a `DEFVAR` init) is read as data:
+  X's names become mentions but not call-site references. Strictly more
+  coverage than the old skip-the-form behaviour; still not evaluation.
+- `dead-definition` cannot see name dispatch a quoted symbol never
+  mentions (`intern`-built names, `--allow-definition` remains the escape
+  hatch).
+
+---
+
+# Previous status (kept verbatim)
+
 > Renamed from lisplint on 2026-09-14. Historical text below keeps the old name.
 
-# STATUS — hardening the two unsafe fix rules + the inverse check rule (DONE)
+## hardening the two unsafe fix rules + the inverse check rule (DONE)
 
 Edits only inside /home/y0usaf/dev/sandbox/lisplint. No user project touched.
 No tests / fixtures / golden files. Every number from a command actually run.
