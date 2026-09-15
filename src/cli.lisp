@@ -166,9 +166,13 @@ threshold and opt-out land in *policy-settings*. Returns O."
          (defs (make-hash-table :test #'equal))
          (exports (make-hash-table :test #'equal))
          (macros (make-hash-table :test #'equal))
+         (mentions (make-hash-table :test #'equal))
          (specials (make-hash-table :test #'equal)))
     (dolist (m models)
       (maphash (lambda (k v) (incf (gethash k index 0) v)) (file-model-refs m))
+      (dolist (n (file-model-nodes m))
+        (dolist (name (node-quoted-names n))
+          (setf (gethash name mentions) t)))
       (dolist (n (top-level-forms (file-model-nodes m)))
         (multiple-value-bind (kind name line) (top-level-def n)
           (when name
@@ -181,7 +185,7 @@ threshold and opt-out land in *policy-settings*. Returns O."
           (when (and (consp form) (equal (form-symbol-name (car form)) "DEFPACKAGE"))
             (dolist (e (exported-names (list n))) (setf (gethash e exports) t))))))
     (make-ctx :files models :index index :defs defs :exports exports :specials specials
-              :macros macros
+              :macros macros :mentions mentions
               :fn-defs (function-def-index models)
               :order order :order-source source
               :allow-definitions (opts-allow-definitions o)

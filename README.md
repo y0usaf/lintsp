@@ -85,7 +85,7 @@ and defaults. Four are **off by default** (marked below).
 
 | rule | default | what it flags |
 |---|---|---|
-| `dead-definition` | on | a top-level definition referenced nowhere in the analysed files |
+| `dead-definition` | on | a top-level definition whose name appears nowhere in the analysed files, not even quoted |
 | `deep-nesting` | **off** | a form nested deeper than the depth threshold |
 | `defparameter-named-like-constant` | **off** | a `defparameter` using the `+constant+` convention (policy, not a defect) |
 | `defstruct-after-use` | on | a structure accessor used before the `DEFSTRUCT` that defines it |

@@ -219,6 +219,35 @@ contained: a single odd form must not abort a whole run."
       (error () nil))
     (nreverse (car box))))
 
+;;; A symbol inside QUOTE data is not a call site, but a dispatch table selects
+;;; on it all the same ('(("x" . handler) ...) through ASSOC and FUNCALL), and a
+;;; reader cannot tell the two apart. DEAD-DEFINITION counts such names as
+;;; mentions: a definition whose name appears anywhere, even quoted, is kept
+;;; alive. Keywords are excluded — a keyword never names a definition.
+
+(defun quoted-names (form acc)
+  "Push every non-keyword symbol name inside a QUOTE datum in FORM onto ACC."
+  (cond
+    ((consp form)
+     (if (equal (and (symbolp (first form)) (symbol-name (first form))) "QUOTE")
+         (labels ((data (x)
+                    (cond ((consp x) (data (first x)) (data (rest x)))
+                          ((vectorp x)
+                           (loop for i from 0 below (length x) do (data (aref x i))))
+                          ((and (symbolp x) (not (keywordp x)))
+                           (push (symbol-name x) (first acc))))))
+           (data (rest form)))
+         (dolist (x form) (quoted-names x acc))))
+    ((vectorp form)
+     (loop for i from 0 below (length form) do (quoted-names (aref form i) acc))))
+  acc)
+
+(defun node-quoted-names (node)
+  "Every symbol name mentioned inside quoted data in NODE's datum."
+  (let ((box (list nil)))
+    (handler-case (quoted-names (node-form node) box) (error () nil))
+    (first box)))
+
 ;;; ------------------------------------------------------------------ definitions
 
 (defparameter *definer-heads*
@@ -366,6 +395,7 @@ collector is a mutable box."
   allow-definitions allow-symbols specials
   macros                      ; hash name -> T for every DEFMACRO in the set
   fn-defs                     ; hash function name -> ((path line) ...), in file order
+  mentions                    ; hash name -> T for names inside QUOTE data
   package-exports             ; hash package name -> hash of its :export names
   defindex
   long-lines deep-depth)
@@ -374,6 +404,14 @@ collector is a mutable box."
   (loop for f in (ctx-files ctx) append (all-list-nodes (file-model-nodes f))))
 
 (defun ctx-ref-count (ctx name) (gethash (string-upcase name) (ctx-index ctx) 0))
+
+(defun ctx-mentioned-p (ctx name)
+  "T when NAME appears inside quoted data anywhere in the set. A mention is not
+a call site, but name-dispatched handlers select on quoted names, so it is
+enough to keep a definition alive. NIL slot (fix-time contexts) means nothing
+is mentioned."
+  (and (ctx-mentions ctx)
+       (gethash (string-upcase name) (ctx-mentions ctx))))
 
 ;;; ------------------------------------------------------------------ node rules
 
@@ -1104,6 +1142,7 @@ name-dispatched handlers by design, so --allow-definition exists."
                            :test #'string=)
                    (zerop (ctx-ref-count ctx name))
                    (not (gethash name (ctx-exports ctx)))
+                   (not (ctx-mentioned-p ctx name))
                    (not (member name (ctx-allow-definitions ctx) :test #'string=)))
           (emit (make-diagnostic "dead-definition" :warning
                                  (file-model-path m) line (node-col node)
@@ -1257,7 +1296,7 @@ defined (later in load order)" name))
 (defrule "defparameter-named-like-constant" :file :note nil
   "a defparameter whose name uses the +constant+ convention; off by default, it is a project policy not a defect (autolith's AGENTS.md forbids defconstant), so fix never rewrites it")
 (defrule "dead-definition" :file :warning t
-  "a top-level definition referenced nowhere in the analysed files (not auto-fixed: name-dispatched handlers reach definitions the reader cannot see)")
+  "a top-level definition whose name appears nowhere in the analysed files, not even quoted (not auto-fixed: name-dispatched handlers reach definitions the reader cannot see)")
 (defrule "long-function" :file :note t
   "a function body longer than the line threshold (not auto-fixed: splitting a function is a design change)")
 (defrule "deep-nesting" :file :note nil
