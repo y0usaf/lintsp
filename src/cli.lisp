@@ -232,6 +232,8 @@ reported and skipped, never allowed to abort the run."
 (defvar *rule-fns*
   '(("optional-and-key" . rule-optional-and-key)
     ("quadratic-append" . rule-quadratic-append)
+    ("self-concatenating-accumulator" . rule-self-concatenating-accumulator)
+    ("nth-indexed-list-loop" . rule-nth-indexed-list-loop)
     ("ignore-then-read" . rule-ignore-then-read)
     ("unused-binding" . rule-unused-binding)
     ("unused-parameter" . rule-unused-parameter)
