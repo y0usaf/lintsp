@@ -78,7 +78,7 @@ there, not in the linter.
 
 ## Rules
 
-28 rules, grouped by family. `list` prints the same set with full descriptions
+30 rules, grouped by family. `list` prints the same set with full descriptions
 and defaults. Three are **off by default** (marked below).
 
 ### Structural — `src/rules.lisp`

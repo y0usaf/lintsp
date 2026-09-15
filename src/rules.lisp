@@ -424,6 +424,175 @@ list on every call; accumulate and NREVERSE once"
                                              (string-downcase h) place place))
                     out))))))))
 
+;;; --------------------------------------- perf: copies and walks of a sequence
+;;; Both rules below encode a CLHS complexity fact, not a measurement: each
+;;; names an operation that copies or walks its whole sequence argument, so a
+;;; form that runs it repeatedly over an accumulator is quadratic by
+;;; construction. Neither asserts that the program is slow. Like quadratic-append
+;;; above they are report-only (fix.lisp:12-15): reordering an accumulation or
+;;; replacing an index walk is a design decision, not a text splice.
+
+(defun quoted-name-p (form name)
+  "FORM is the literal (QUOTE NAME), e.g. the 'STRING type argument of
+CONCATENATE. Symbols are read into a private package, so the printed name is
+what is compared, never the symbol."
+  (and (consp form) (consp (cdr form))
+       (equal (form-symbol-name (car form)) "QUOTE")
+       (equal (form-symbol-name (second form)) name)))
+
+(defun rule-self-concatenating-accumulator (node model ctx out)
+  "SETF/SETQ of a place to a copy whose first input is that same place:
+(setf P (concatenate 'string P ...)), or (setf P (append P ...)) whose tail is
+not a literal (list ...) - that shape is quadratic-append's."
+  (declare (ignore ctx))
+  (let ((form (node-form node)))
+    (when (and (consp form) (symbolp (car form)))
+      (let ((h (symbol-name (car form))))
+        (when (and (member h '("SETF" "SETQ") :test #'string=) (>= (length form) 3)
+                   (not (gethash node (fm-quoted-nodes model))))
+          (let ((place (second form)) (value (third form)) (msg nil))
+            (when (and (symbolp place) (consp value) (symbolp (car value)))
+              (let ((vh (symbol-name (car value))))
+                (cond
+                  ;; CONCATENATE allocates a fresh sequence and copies every
+                  ;; argument, so the accumulator is copied in full per call.
+                  ((and (string= vh "CONCATENATE") (consp (cdddr value))
+                        (quoted-name-p (second value) "STRING")
+                        (eq (third value) place))
+                   (setf msg (format nil "~A ~A (concatenate 'string ~A ...) copies the whole ~
+accumulated string on every call (CLHS CONCATENATE copies each argument); growing it in a loop ~
+is quadratic - accumulate into a string stream and call GET-OUTPUT-STREAM-STRING once"
+                                     (string-downcase h) place place)))
+                  ;; APPEND copies every argument but the last, so the
+                  ;; accumulator is copied in full per call.
+                  ((and (string= vh "APPEND") (consp (cddr value))
+                        (eq (second value) place)
+                        (not (and (consp (third value))
+                                  (equal (form-symbol-name (third value)) "LIST"))))
+                   (setf msg (format nil "~A ~A (append ~A ...) copies the whole accumulated ~
+list on every call (CLHS APPEND copies every argument but the last); growing it in a loop is ~
+quadratic - accumulate and NREVERSE once"
+                                     (string-downcase h) place place)))
+                  (t nil))
+                (when msg
+                  (emit (make-diagnostic "self-concatenating-accumulator" :note
+                                         (file-model-path model) (node-line node) (node-col node)
+                                         msg)
+                        out))))))))))
+
+;;; -------------------------------------------------- perf: NTH-indexed list walk
+;;; The list-ness is read off the form: NTH, MEMBER and TAILP are defined only
+;;; for lists (CLHS), so a call proves its sequence argument is a list with no
+;;; type knowledge and no binding model. LENGTH alone could not be classified -
+;;; it is constant on a vector and linear on a list - so it is never the key;
+;;; it is only believed when one of the list-only calls names the same sequence.
+
+(defparameter *list-only-index-ops* '("NTH" "MEMBER" "TAILP")
+  "List-only operators whose second argument is therefore proven a list by the
+call itself.")
+
+(defparameter *list-only-length-ops* '("LENGTH" "LIST-LENGTH")
+  "Sequence-length operators. LENGTH is linear on a list but constant on a
+vector, so it counts only against the same sequence a list-only call named;
+LIST-LENGTH is list-only and linear.")
+
+(defparameter *loop-bound-keywords*
+  '("BELOW" "UPTO" "TO" "DOWNTO" "ABOVE" "WHILE" "UNTIL")
+  "LOOP keywords whose following item is the loop's own bound.")
+
+(defun loop-index-names (form)
+  "Printed names of the variables loop FORM iterates (DOTIMES, DO, DO*, LOOP)."
+  (let ((h (form-symbol-name (car form))))
+    (cond
+      ((and (equal h "DOTIMES") (consp (second form)) (symbolp (first (second form))))
+       (list (symbol-name (first (second form)))))
+      ((member h '("DO" "DO*") :test #'equal)
+       (loop for b in (if (listp (second form)) (second form) nil)
+             when (and (consp b) (symbolp (first b))) collect (symbol-name (first b))))
+      ((equal h "LOOP")
+       (let ((items (cdr form)) (out nil))
+         (loop while items do
+           (let ((x (pop items)))
+             (when (and (symbolp x) (not (keywordp x))
+                        (member (symbol-name x) '("FOR" "AS") :test #'string=))
+               (let ((v (pop items)))
+                 (when (and (symbolp v) (not (keywordp v))) (push (symbol-name v) out))))))
+         (nreverse out))))))
+
+(defun loop-bound-forms (form)
+  "The forms that decide how many times loop FORM runs: the DOTIMES count, the
+DO/DO* end test, or the item after a LOOP bound keyword."
+  (let ((h (form-symbol-name (car form))))
+    (cond
+      ((equal h "DOTIMES")
+       (and (consp (second form)) (consp (cdr (second form))) (list (second (second form)))))
+      ((member h '("DO" "DO*") :test #'equal)
+       (and (consp (third form)) (list (first (third form)))))
+      ((equal h "LOOP")
+       (loop for (x . rest) on (cdr form)
+             when (and (symbolp x) (not (keywordp x)) rest
+                       (member (symbol-name x) *loop-bound-keywords* :test #'string=))
+               collect (first rest))))))
+
+(defun list-name-of (form)
+  "The list variable FORM names, or NIL: an atom, or (the list X) around one."
+  (cond
+    ((and (symbolp form) (not (keywordp form))) (symbol-name form))
+    ((and (consp form) (equal (form-symbol-name (car form)) "THE")
+          (consp (cdr form)) (equal (form-symbol-name (second form)) "LIST"))
+     (list-name-of (third form)))
+    (t nil)))
+
+(defun list-walk-names (form index-names)
+  "Walk FORM - quoted data is data, not a call - and return (values CALLS BOUNDS):
+the sequence name S of every (NTH/MEMBER/TAILP V S) whose V is one of
+INDEX-NAMES, and the sequence name S of every (LENGTH S) / (LIST-LENGTH S)."
+  (let ((calls nil) (bounds nil))
+    (labels ((walk (x)
+               (when (consp x)
+                 (let ((h (form-symbol-name (car x))))
+                   (cond
+                     ((equal h "QUOTE") nil)
+                     ((and h (member h *list-only-index-ops* :test #'string=)
+                           (consp (cdr x)) (consp (cddr x))
+                           (member (list-name-of (second x)) index-names :test #'string=))
+                      (let ((s (list-name-of (third x))))
+                        (when s (pushnew s calls :test #'string=))))
+                     ((and h (member h *list-only-length-ops* :test #'string=)
+                           (consp (cdr x)))
+                      (let ((s (list-name-of (second x))))
+                        (when s (pushnew s bounds :test #'string=))))))
+                 (dolist (y x) (walk y)))))
+      (walk form))
+    (values calls bounds)))
+
+(defun rule-nth-indexed-list-loop (node model ctx out)
+  "An index-driven walk over a list: a DOTIMES/DO/DO*/LOOP whose own bound is the
+length of a sequence the body indexes by the loop variable."
+  (declare (ignore ctx))
+  (let ((form (node-form node)))
+    (when (and (consp form) (symbolp (car form))
+               (not (gethash node (fm-quoted-nodes model))))
+      (let ((index-names (loop-index-names form))
+            (bounds (loop-bound-forms form)))
+        (when (and index-names bounds)
+          (multiple-value-bind (calls ignored) (list-walk-names form index-names)
+            (declare (ignore ignored))
+            (let ((hit (loop for b in bounds
+                             thereis (multiple-value-bind (bc bs) (list-walk-names b nil)
+                                       (declare (ignore bc))
+                                       (find-if (lambda (s) (member s calls :test #'string=))
+                                                bs)))))
+              (when hit
+                (emit (make-diagnostic "nth-indexed-list-loop" :note
+                                       (file-model-path model) (node-line node) (node-col node)
+                                       (format nil "~A over ~A: each iteration walks ~A from the front ~
+(CLHS NTH/MEMBER/TAILP search a list from its start) while the loop is bounded by (length ~A); ~
+O(n^2) unless it exits early, so use DOLIST/MAPCAR or hold the remaining tail in a variable"
+                                               (string-downcase (form-symbol-name (car form)))
+                                               hit hit hit))
+                      out)))))))))
+
 ;;; ------------------------------------------------------------------ file rules
 
 (defun rule-ignore-then-read (model ctx out)
@@ -1063,6 +1232,10 @@ defined (later in load order)" name))
   "a lambda list containing both &OPTIONAL and &KEY (not auto-fixed: splitting it is an API change)")
 (defrule "quadratic-append" :node :warning t
   "(setf x (append x (list y))) — copies the whole list on every call (not auto-fixed: the correct rewrite reorders the accumulation or needs an nreverse at the use site)")
+(defrule "self-concatenating-accumulator" :node :note t
+  "(setf x (concatenate 'string x ...)) or (setf x (append x ...)) - CONCATENATE copies each argument and APPEND copies every argument but the last, so the accumulator is copied in full on every call (not auto-fixed: the correct rewrite reorders the accumulation or needs a string stream)")
+(defrule "nth-indexed-list-loop" :node :note t
+  "an index-driven walk over a list: a DOTIMES/DO/DO*/LOOP whose own bound is (length X) and whose body indexes X by the loop variable with NTH, MEMBER or TAILP - all three are defined only for lists, so list-ness is read off the form with no type inference (not auto-fixed: replacing the walk is a design change)")
 (defrule "ignore-then-read" :file :warning t
   "a (declare (ignore x)) on a parameter the body then reads or writes (variable namespace only: a call position is a function reference, not a read). fix deletes a false declaration")
 (defrule "unused-binding" :file :note t

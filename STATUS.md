@@ -26,7 +26,7 @@ detail lives on in REPORT.md sections 8-11.)
 - NEW rule `unexported-external-reference` (src/rules.lisp, warning, report
   only): a single-colon `PKG:SYM` whose SYM the analysed set does not export.
   Packages outside the analysed set are not reported (cannot check). Strings
-  cannot match. `lisplint list` = 28 rules.
+  cannot match. `lisplint list` = 30 rules.
 - `fix` prints guard refusals (`REFUSED (not proven safe: REASON)`) and counts
   them; refused edits make the exit code 1. Refusal lines are deduped.
 - ctx gains `fn-defs` (function definitions by file:line) and `package-exports`;
@@ -73,6 +73,6 @@ src/core.lisp, src/rules.lisp, src/simplify.lisp, src/fix.lisp, src/cli.lisp.
 - README.md written. Removed the dangling `lintsp/tests` defsystem from
   `lintsp.asd` (it pointed at a `tests/test` that does not exist; no tests added).
 - `nix build` green (store `62ikrfwvrqvhnb3ia8zbshcqv36aqypq-lintsp-0.1.0`);
-  `./result/bin/lintsp list` = 28 rules.
+  `./result/bin/lintsp list` = 30 rules.
 - Published private: https://github.com/y0usaf/lintsp (commit 7987664).
 
