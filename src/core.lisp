@@ -179,6 +179,19 @@ Used only to find package prefixes without tripping over strings/comments."
 
 (defvar *read-package* nil)
 
+(defvar *source-readtable*
+  (let ((rt (copy-readtable nil)))
+    ;; #.X evaluates X while reading; a linter never runs the file's code, so
+    ;; *READ-EVAL* stays NIL and this dispatch reads X as data under QUOTE
+    ;; instead. The enclosing form survives, and X's names still reach the
+    ;; quoted-mention index (CASE keys are a common #. site).
+    (set-dispatch-macro-character
+     #\# #\. (lambda (s c n)
+               (declare (ignore c n))
+               (list 'quote (read s t nil t)))
+     rt)
+    rt))
+
 (defun ensure-package (name)
   (or (find-package name)
       (ignore-errors (make-package name :use nil))))
@@ -321,7 +334,8 @@ diagnostics for the rest."
          (nodes nil) (problems nil))
     (let ((*package* (or *read-package*
                          (setf *read-package* (make-package "LINTSP.SRC" :use nil))))
-          (*read-eval* nil))
+          (*read-eval* nil)
+          (*readtable* *source-readtable*))
       (register-packages src)
       (with-input-from-string (s src)
         (loop
