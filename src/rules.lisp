@@ -1238,8 +1238,8 @@ defined (later in load order)" name))
   "(setf x (append x (list y))) — copies the whole list on every call (not auto-fixed: the correct rewrite reorders the accumulation or needs an nreverse at the use site)")
 (defrule "self-concatenating-accumulator" :node :note t
   "(setf x (concatenate 'string x ...)) or (setf x (append x ...)) - CONCATENATE copies each argument and APPEND copies every argument but the last, so the accumulator is copied in full on every call (not auto-fixed: the correct rewrite reorders the accumulation or needs a string stream)")
-(defrule "nth-indexed-list-loop" :node :note t
-  "an index-driven walk over a list: a DOTIMES/DO/DO*/LOOP whose own bound is (length X) and whose body indexes X by the loop variable with NTH, MEMBER or TAILP - all three are defined only for lists, so list-ness is read off the form with no type inference (not auto-fixed: replacing the walk is a design change)")
+(defrule "nth-indexed-list-loop" :node :note nil
+  "an index-driven walk over a list: a DOTIMES/DO/DO*/LOOP whose own bound is (length X) and whose body indexes X by the loop variable with NTH, MEMBER or TAILP - all three are defined only for lists, so list-ness is read off the form with no type inference; off by default, no occurrence was found across ~40k LOC of real code, so it is opt-in (--enable nth-indexed-list-loop; not auto-fixed: replacing the walk is a design change)")
 (defrule "ignore-then-read" :file :warning t
   "a (declare (ignore x)) on a parameter the body then reads or writes (variable namespace only: a call position is a function reference, not a read). fix deletes a false declaration")
 (defrule "unused-binding" :file :note t

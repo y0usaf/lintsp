@@ -79,7 +79,7 @@ there, not in the linter.
 ## Rules
 
 30 rules, grouped by family. `list` prints the same set with full descriptions
-and defaults. Three are **off by default** (marked below).
+and defaults. Four are **off by default** (marked below).
 
 ### Structural — `src/rules.lisp`
 
@@ -95,8 +95,10 @@ and defaults. Three are **off by default** (marked below).
 | `ignore-then-read` | on | a `(declare (ignore x))` on a parameter the body then reads |
 | `internal-symbol-leak` | on | a cross-package `PKG::` reference in source (strings excluded) |
 | `long-function` | on | a function body longer than the line threshold |
+| `nth-indexed-list-loop` | **off** | an index-driven walk over a list: a loop bounded by `(length X)` whose body indexes X by the loop variable with `NTH`/`MEMBER`/`TAILP` |
 | `optional-and-key` | on | a lambda list containing both `&OPTIONAL` and `&KEY` |
 | `quadratic-append` | on | `(setf x (append x (list y)))`, which copies the whole list per call |
+| `self-concatenating-accumulator` | on | `(setf x (concatenate 'string x ...))`, which copies the accumulator on every call |
 | `unexported-external-reference` | on | a single-colon `PKG:SYM` whose symbol the package does not export |
 | `unused-binding` | on | a lexical binding never referenced |
 | `unused-parameter` | on | a lambda-list parameter never referenced |
