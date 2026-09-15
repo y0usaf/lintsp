@@ -501,7 +501,8 @@ LIST-LENGTH is list-only and linear.")
   "LOOP keywords whose following item is the loop's own bound.")
 
 (defun loop-index-names (form)
-  "Printed names of the variables loop FORM iterates (DOTIMES, DO, DO*, LOOP)."
+  "Printed names of the variables loop FORM iterates (DOTIMES, DO, DO*, LOOP).
+A dotted form (... . TAIL) has no item after TAIL, so the scans step by CONSP."
   (let ((h (form-symbol-name (car form))))
     (cond
       ((and (equal h "DOTIMES") (consp (second form)) (symbolp (first (second form))))
@@ -511,7 +512,7 @@ LIST-LENGTH is list-only and linear.")
              when (and (consp b) (symbolp (first b))) collect (symbol-name (first b))))
       ((equal h "LOOP")
        (let ((items (cdr form)) (out nil))
-         (loop while items do
+         (loop while (consp items) do
            (let ((x (pop items)))
              (when (and (symbolp x) (not (keywordp x))
                         (member (symbol-name x) '("FOR" "AS") :test #'string=))
@@ -521,16 +522,17 @@ LIST-LENGTH is list-only and linear.")
 
 (defun loop-bound-forms (form)
   "The forms that decide how many times loop FORM runs: the DOTIMES count, the
-DO/DO* end test, or the item after a LOOP bound keyword."
+DO/DO* end test, or the item after a LOOP bound keyword. A dotted form ends
+without one, so the scans step by CONSP."
   (let ((h (form-symbol-name (car form))))
     (cond
       ((equal h "DOTIMES")
        (and (consp (second form)) (consp (cdr (second form))) (list (second (second form)))))
       ((member h '("DO" "DO*") :test #'equal)
-       (and (consp (third form)) (list (first (third form)))))
+       (and (consp (cddr form)) (consp (third form)) (list (first (third form)))))
       ((equal h "LOOP")
        (loop for (x . rest) on (cdr form)
-             when (and (symbolp x) (not (keywordp x)) rest
+             when (and (symbolp x) (not (keywordp x)) (consp rest)
                        (member (symbol-name x) *loop-bound-keywords* :test #'string=))
                collect (first rest))))))
 
@@ -546,7 +548,9 @@ DO/DO* end test, or the item after a LOOP bound keyword."
 (defun list-walk-names (form index-names)
   "Walk FORM - quoted data is data, not a call - and return (values CALLS BOUNDS):
 the sequence name S of every (NTH/MEMBER/TAILP V S) whose V is one of
-INDEX-NAMES, and the sequence name S of every (LENGTH S) / (LIST-LENGTH S)."
+INDEX-NAMES, and the sequence name S of every (LENGTH S) / (LIST-LENGTH S).
+A dotted pair - LOOP's own FOR (A . B) IN ... - has no cdr chain to step onto,
+so the walk steps by hand instead of handing the tail to DOLIST."
   (let ((calls nil) (bounds nil))
     (labels ((walk (x)
                (when (consp x)
@@ -562,7 +566,7 @@ INDEX-NAMES, and the sequence name S of every (LENGTH S) / (LIST-LENGTH S)."
                            (consp (cdr x)))
                       (let ((s (list-name-of (second x))))
                         (when s (pushnew s bounds :test #'string=))))))
-                 (dolist (y x) (walk y)))))
+                 (do ((rest x (cdr rest))) ((atom rest)) (walk (car rest))))))
       (walk form))
     (values calls bounds)))
 
