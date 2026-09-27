@@ -23,6 +23,9 @@
     (unless run (error "LINTSP:RUN is missing after loading the system"))
     run))
 
+(setf (logical-pathname-translations "SYS") nil)
+(asdf:clear-configuration)
+
 (sb-ext:save-lisp-and-die (merge-pathnames "lintsp" *dir*)
                           :executable t
                           :save-runtime-options t

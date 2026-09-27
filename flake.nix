@@ -14,7 +14,7 @@
           pname = "lintsp";
           version = "0.1.0";
           src = self;
-          nativeBuildInputs = [ pkgs.sbcl ];
+          nativeBuildInputs = [ pkgs.sbcl pkgs.removeReferencesTo ];
           buildPhase = ''
             runHook preBuild
             export HOME=$TMPDIR
@@ -27,6 +27,7 @@
             runHook preInstall
             mkdir -p $out/bin
             cp lintsp $out/bin/lintsp
+            remove-references-to -t ${pkgs.sbcl} $out/bin/lintsp
             runHook postInstall
           '';
           # The built image is ~50 MB; keep the source out of it.
