@@ -126,9 +126,6 @@ and defaults. Four are **off by default** (marked below).
 | `no-defconstant` | `DEFCONSTANT`/`DEFINE-CONSTANT`, forbidden by the project's Lisp style |
 | `positional-arity-limit` | a lambda list with more than 3 required positional parameters |
 
-See `REPORT.md` for the engineering record and the corpus measurements behind
-these defaults, and `STATUS.md` for the running log.
-
 ## License
 
 AGPL-3.0-only. See [LICENSE](./LICENSE).
