@@ -30,7 +30,6 @@
             remove-references-to -t ${pkgs.sbcl} $out/bin/lintsp
             runHook postInstall
           '';
-          # The built image is ~50 MB; keep the source out of it.
           dontStrip = true;
           meta = {
             description = "Reader-only Common Lisp linter: parses your source with the host reader and reports structural pathologies";
