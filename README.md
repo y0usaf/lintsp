@@ -90,14 +90,14 @@ and defaults. Four are **off by default** (marked below).
 | `defparameter-named-like-constant` | **off** | a `defparameter` using the `+constant+` convention (policy, not a defect) |
 | `defstruct-after-use` | on | a structure accessor used before the `DEFSTRUCT` that defines it |
 | `duplicated-literal-table` | on | two near-identical literal key lists with a divergence |
-| `earmuffs` | on | a special variable named without `*earmuffs*` |
+| `earmuffs` | on | a special variable named without `*earmuffs*` or `+plus-signs+` |
 | `forward-reference` | **off** | a load-time use of a name before its definition |
 | `ignore-then-read` | on | a `(declare (ignore x))` on a parameter the body then reads |
 | `internal-symbol-leak` | on | a cross-package `PKG::` reference in source (strings excluded) |
 | `long-function` | on | a function body longer than the line threshold |
 | `nth-indexed-list-loop` | **off** | an index-driven walk over a list: a loop bounded by `(length X)` whose body indexes X by the loop variable with `NTH`/`MEMBER`/`TAILP` |
 | `optional-and-key` | on | a lambda list containing both `&OPTIONAL` and `&KEY` |
-| `quadratic-append` | on | `(setf x (append x (list y)))`, which copies the whole list per call |
+| `quadratic-append` | on | `(setf x (append x (list y)))` inside a loop, mapping call or lambda, which copies the whole list per repetition |
 | `self-concatenating-accumulator` | on | `(setf x (concatenate 'string x ...))`, which copies the accumulator on every call |
 | `unexported-external-reference` | on | a single-colon `PKG:SYM` whose symbol the package does not export |
 | `unused-binding` | on | a lexical binding never referenced |

@@ -442,8 +442,22 @@ callers cannot tell positional from keyword tail arguments"
                                                (or h "lambda list")))
                       out)))))))))
 
+(defparameter +repeating-heads+
+  '("LOOP" "DOLIST" "DOTIMES" "DO" "DO*" "LAMBDA" "MAPC" "MAPCAR" "MAPCAN" "MAPL"
+    "MAPLIST" "MAPCON" "MAPHASH" "MAP" "MAP-INTO" "REDUCE"))
+
+(defun inside-repeating-form-p (node nodes)
+  (dolist (d nodes nil)
+    (when (and (not (eq d node))
+               (<= (node-start d) (node-start node))
+               (>= (node-end d) (node-end node))
+               (consp (node-form d)))
+      (let ((h (form-symbol-name (car (node-form d)))))
+        (when (and h (or (member h +repeating-heads+ :test #'string=)
+                         (and (> (length h) 3) (string= "DO-" h :end2 3))))
+          (return t))))))
+
 (defun rule-quadratic-append (node model ctx out)
-  "SETF of a place to (append PLACE (list ...)) copies the whole list each time."
   (declare (ignore ctx))
   (let ((form (node-form node)))
     (when (and (consp form) (symbolp (car form)))
@@ -454,7 +468,10 @@ callers cannot tell positional from keyword tail arguments"
                        (string= (symbol-name (car value)) "APPEND")
                        (eq (second value) place) (second value)
                        (consp (third value))
-                       (string= (symbol-name (car (third value))) "LIST"))
+                       (string= (symbol-name (car (third value))) "LIST")
+                       (or (not (symbolp place))
+                           (find (char (symbol-name place) 0) "*+")
+                           (inside-repeating-form-p node (fm-list-nodes model))))
               (emit (make-diagnostic "quadratic-append" :warning
                                      (file-model-path model) (node-line node) (node-col node)
                                      (format nil "~A ~A (append ~A (list ...)) copies the whole ~
@@ -1048,9 +1065,9 @@ reading it signals a package error"
         (let ((h (symbol-name (car form)))
               (name (form-symbol-name (second form))))
           (when (and name (member h '("DEFVAR" "DEFPARAMETER") :test #'string=)
-                     (not (and (plusp (length name))
-                               (char= (char name 0) #\*)
-                               (char= (char name (1- (length name))) #\*))))
+                     (not (and (> (length name) 1)
+                               (find (char name 0) "*+")
+                               (char= (char name 0) (char name (1- (length name)))))))
             (emit (make-diagnostic "earmuffs" :note
                                    (file-model-path model) (node-line node) (node-col node)
                                    (format nil "(~A ~A) names a special without earmuffs; bind it ~
@@ -1274,7 +1291,7 @@ defined (later in load order)" name))
 (defrule "optional-and-key" :node :warning t
   "a lambda list containing both &OPTIONAL and &KEY (not auto-fixed: splitting it is an API change)")
 (defrule "quadratic-append" :node :warning t
-  "(setf x (append x (list y))) — copies the whole list on every call (not auto-fixed: the correct rewrite reorders the accumulation or needs an nreverse at the use site)")
+  "(setf x (append x (list y))) inside a loop, mapping call or LAMBDA, or on a non-lexical place — copies the whole list on every repetition (not auto-fixed: the correct rewrite reorders the accumulation or needs an nreverse at the use site)")
 (defrule "self-concatenating-accumulator" :node :note t
   "(setf x (concatenate 'string x ...)) or (setf x (append x ...)) - CONCATENATE copies each argument and APPEND copies every argument but the last, so the accumulator is copied in full on every call (not auto-fixed: the correct rewrite reorders the accumulation or needs a string stream)")
 (defrule "nth-indexed-list-loop" :node :note nil
@@ -1292,7 +1309,7 @@ defined (later in load order)" name))
 (defrule "unexported-external-reference" :file :warning t
   "a PKG:SYM reference with a single colon whose SYM the analysed DEFPACKAGE for PKG does not export, strings excluded (not auto-fixed: the reference is a reader error, not a rewrite; a package whose DEFPACKAGE is not in the analysed set is not reported)")
 (defrule "earmuffs" :file :note t
-  "a special variable named without *earmuffs*")
+  "a special variable named without *earmuffs* or +plus-signs+")
 (defrule "defparameter-named-like-constant" :file :note nil
   "a defparameter whose name uses the +constant+ convention; off by default, it is a project policy not a defect (autolith's AGENTS.md forbids defconstant), so fix never rewrites it")
 (defrule "dead-definition" :file :warning t
