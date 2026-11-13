@@ -121,7 +121,7 @@ and defaults. Four are **off by default** (marked below).
 |---|---|
 | `carcdr` | `CAR`/`CDR` in application code; the style prefers `FIRST`/`REST` |
 | `docstring` | a documentation string in a `DEFUN`/`DEFMETHOD`/`DEFMACRO`/`DEFGENERIC`/`DEFCLASS`/`DEFINE-*`, the doc argument of a `DEFVAR`/`DEFPARAMETER`, or a `(:documentation …)` option (fixable: the string is deleted) |
-| `keyword-quoting` | a bare keyword in an evaluated keyword-value position |
+| `keyword-quoting` | a bare keyword in an evaluated keyword-value position (fixed only where the head is a function the analysed set defines; alien/FFI type forms are skipped) |
 | `keyword-quoting-in-unevaluated` | a keyword quoted in an unevaluated syntax position (`:initarg`, `case` key) |
 | `no-defconstant` | `DEFCONSTANT`/`DEFINE-CONSTANT`, forbidden by the project's Lisp style |
 | `positional-arity-limit` | a lambda list with more than 3 required positional parameters |

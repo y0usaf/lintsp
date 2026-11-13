@@ -52,7 +52,7 @@
    (list :name "keyword-quoting" :matcher :kw-value-quote
          :severity :note :default t :fix t :opt-out t
          :message "keyword value ~A directly follows the keyword-argument name ~A; the project's style quotes it as ~A"
-         :description "a bare keyword in an evaluated keyword-value position (a call argument, an evaluated plist, a defclass :initform or :default-initargs); the project's style quotes it (auto-fixed: a keyword self-evaluates, so in these evaluated positions ':X and :X are the same value and ' is inserted before the token; CL heads, macros and unevaluated positions are not suggested, and a position whose head is a macro known to the analysed set is reported without the fix, because a macro can read the raw form)")
+         :description "a bare keyword in an evaluated keyword-value position (a call argument, an evaluated plist, a defclass :initform or :default-initargs); the project's style quotes it (auto-fixed: a keyword self-evaluates, so in these evaluated positions ':X and :X are the same value and ' is inserted before the token - but only where the form's head is an unqualified symbol the analysed set defines as a function, the one case the reader proves the arguments are evaluated; every other head, package-qualified included, is reported without the fix because a macro or an unknown operator can read its arguments instead of evaluating them. CL heads, macros and unevaluated positions are not reported, and neither is anything inside an alien/FFI definition form, whose contents are type syntax)")
    (list :name "keyword-quoting-in-unevaluated" :matcher :kw-unquoted
          :severity :warning :default t :fix nil
          :cases '("INITARG" "CASE") 
@@ -203,9 +203,7 @@ NIL, so its node is a :symbol, not a :list."
   (and n
        (or (eq (node-kind n) :list)
            (and (eq (node-kind n) :symbol)
-                (null (node-form n))
-                (let ((raw (node-raw n)))
-                  (and raw (plusp (length raw)) (char= (char raw 0) #\()))))))
+                (equal (node-raw n) "()")))))
 
 (defun docstring-sites (node)
   "Every documentation site in definer NODE, each as (FIRST LAST ONLY-BODY-P):
@@ -282,9 +280,53 @@ CHECK emits these, and the fix applies their edits, so the two cannot disagree."
 ;;; keyword token, covering exactly the token span. The finding and its edit are
 ;;; built together (KW-PROPOSAL), so an edit can only exist where the rule
 ;;; reports, and never in the positions the rule excludes (CL heads, macros,
-;;; unevaluated syntax). Where the form's head is a macro known to the analysed
-;;; set the edit is withheld and the finding stands alone (report-only): a macro
-;;; can read the raw form, so the quote is not provably value-preserving there.
+;;; unevaluated syntax).
+;;;
+;;; An edit needs more than a finding: it needs the position to be evaluated.
+;;; `(sb-alien:define-alien-routine ("x" %x) int ((cwd (c-string :external-format
+;;; :utf-8))))` shows why a bare symbol head is not proof enough - `c-string` is a
+;;; type specifier there, and quoting its `:utf-8` turns a type into the list
+;;; (quote :utf-8), which SBCL rejects. So the fix applies only where the head is
+;;; an unqualified symbol the ANALYSED SET defines as a function: that is the one
+;;; case the reader can prove the arguments are evaluated. Every other head is
+;;; reported and left alone, and the alien/FFI definition forms, whose contents
+;;; are all type syntax, are not even reported.
+
+(defparameter *unevaluated-tree-heads*
+  '("DEFINE-ALIEN-ROUTINE" "DEFINE-ALIEN-TYPE" "DEFINE-ALIEN-VARIABLE" "DEFINE-ALIEN-CALLABLE"
+    "DEFINE-ALIEN-STRUCT" "DEFINE-ALIEN-UNION" "EXTERN-ALIEN"
+    "DEFCFUN" "DEFCTYPE" "DEFCSTRUCT" "DEFCUNION" "DEFCVAR" "DEFCBITFIELD" "DEFCENUM"
+    "DEFCALLBACK")
+  "Alien/FFI definition and type forms. Everything inside one is type syntax, so
+no keyword in it is a keyword-argument value: the head names are compared without
+their package, which is how sb-alien: and cffi: spell the same constructs.")
+
+(defun fm-unevaluated-nodes (m)
+  "Eq-set of the nodes inside an alien/FFI definition form of M, the form itself
+included. Built once per file, like the quoted-data set."
+  (or (file-model-unevaluated m)
+      (setf (file-model-unevaluated m)
+            (let ((h (make-hash-table :test 'eq)))
+              (labels ((mark (n)
+                         (setf (gethash n h) t)
+                         (dolist (c (node-items n)) (mark c))))
+                (dolist (n (fm-list-nodes m))
+                  (when (and (eq (node-kind n) :list)
+                             (member (node-head n) *unevaluated-tree-heads*
+                                     :test #'string=))
+                    (mark n))))
+              h))))
+
+(defun call-head-proven-function-p (node ctx)
+  "T when NODE's head is an unqualified symbol the analysed set defines as a
+function, so its argument positions are provably evaluated."
+  (let ((head (first (node-items node))))
+    (and head
+         (eq (node-kind head) :symbol)
+         (let ((raw (node-raw head)))
+           (and raw (null (find #\: raw))))
+         (ctx-fn-defs ctx)
+         (gethash (node-head node) (ctx-fn-defs ctx)))))
 
 (defun kw-quote-edit (model node)
   "The insertion of ' immediately before keyword NODE, covering exactly the token
@@ -297,7 +339,8 @@ span: START = END = the first character of the token."
 
 (defun kw-proposal (row model node message &optional (fixable t))
   "A keyword-quoting proposal: (RULE SEVERITY LINE COL MESSAGE EDITS). EDITS is
-empty only when FIXABLE is false - a macro-headed position, kept report-only."
+empty when FIXABLE is false - a position whose head is not provably a function,
+kept report-only."
   (list (getf row :name) (getf row :severity) (node-line node) (node-col node)
         message (if fixable (list (kw-quote-edit model node)) nil)))
 
@@ -307,10 +350,11 @@ empty only when FIXABLE is false - a macro-headed position, kept report-only."
                        (format nil (getf row :message) (symbol-name (node-form v))
                                key-name (concatenate 'string "'" (symbol-name (node-form v))))))))
 
-(defun propose-keyword-run (row items model)
+(defun propose-keyword-run (row items model &optional (fixable t))
   "Proposals for every keyword that sits in a VALUE slot of a maximal run of
 consecutive keywords in a call's argument list: the odd positions from the run's
-start."
+start. FIXABLE is false where the call itself is not proven: the finding stands,
+the quote is not applied."
   (let ((i 1) (n (length items)) (out nil))
     (loop while (< i n) do
       (if (keyword-node (nth i items))
@@ -323,7 +367,8 @@ start."
                                          (format nil (getf row :message)
                                                  (symbol-name (node-form v))
                                                  (symbol-name (node-form (nth (1- j) items)))
-                                                 (concatenate 'string "'" (symbol-name (node-form v)))))
+                                                 (concatenate 'string "'" (symbol-name (node-form v))))
+                                         fixable)
                             out))))
           (incf i)))
     (nreverse out)))
@@ -360,7 +405,9 @@ argument value.")
   "Proposals for every keyword-quoting finding in NODE. The rule's own predicate:
 CHECK emits these, and the fix applies their edits, so the two cannot disagree."
   (let ((h (node-head node)) (form (node-form node)))
-    (when (and h (not (gethash node (fm-quoted-nodes model))))
+    (when (and h
+               (not (gethash node (fm-quoted-nodes model)))
+               (not (gethash node (fm-unevaluated-nodes model))))
       (let ((macros (ctx-macro-names ctx)))
         (cond
           ;; a slot definition: option names live at odd positions. Flag the
@@ -378,12 +425,15 @@ CHECK emits these, and the fix applies their edits, so the two cannot disagree."
                      append (propose-kw-value row v ":initform" model))
                (propose-keyword-run row (node-items node) model)))
           ;; a call: a plain operator that is not a CL builtin, a macro (whose
-          ;; keyword metadata it may quote itself), or unevaluated syntax.
+          ;; keyword metadata it may quote itself), or unevaluated syntax. Only a
+          ;; head the analysed set defines as a function proves its arguments are
+          ;; evaluated; every other head is reported without the fix.
           ((and (symbolp (car form)) (not (keywordp (car form)))
                 (not (cl-name-p h))
                 (not (member h *unevaluated-op-heads* :test #'string=))
                 (not (call-head-macro-p h macros)))
-           (propose-keyword-run row (node-items node) model)))))))
+           (propose-keyword-run row (node-items node) model
+                                (call-head-proven-function-p node ctx))))))))
 
 (defun match-kw-value-quote (row node model ctx out)
   (emit-proposals (propose-kw-value-quote row node model ctx) model out))
@@ -470,13 +520,15 @@ are the same function in Common Lisp, so the rename is provably a no-op."
 ;;; come from the rule's own proposal function - the same one CHECK emits from -
 ;;; with the macro table built from the analysed set, exactly as the SIMPLIFICATION
 ;;; fixes do. A keyword self-evaluates, so the quote is value-preserving where the
-;;; rule reports; a macro-headed position yields a proposal with no edit and is
-;;; therefore never rewritten.
+;;; rule reports AND the head is a function the analysed set defines; the function
+;;; index is what proves that, exactly as CHECK's context does. Every other
+;;; position yields a proposal with no edit and is therefore never rewritten.
 
 (defun policy-kw-quote-fix-edits (models)
   (let ((row (policy-row "keyword-quoting")) (edits nil))
     (when (getf row :fix)
-      (let ((ctx (make-ctx :macros (defmacro-names-of models))))
+      (let ((ctx (make-ctx :macros (defmacro-names-of models)
+                           :fn-defs (function-def-index models))))
         (dolist (m models)
           (unless (policy-opt-out-p row (file-model-path m))
             (dolist (node (fm-list-nodes m))

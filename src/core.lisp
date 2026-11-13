@@ -492,7 +492,8 @@ editor can resolve.")
       (dolist (n nodes) (walk n)))
     (nreverse acc)))
 
-(defstruct file-model path src nodes defs refs package reader-diags list-nodes all-nodes quoted)
+(defstruct file-model path src nodes defs refs package reader-diags list-nodes all-nodes quoted
+  unevaluated)
 
 (defun fm-quoted-nodes (m)
   "Eq-set of nodes inside a QUOTE form, computed once per file. Rebuilding it in
