@@ -262,13 +262,32 @@ MODELS declares."
       (setf edits (append edits (false-ignore-edits m)
                           (unused-let-edits m specials))))
     (append edits (simplification-fix-edits models order) (policy-fix-edits models)
-            (policy-kw-quote-fix-edits models))))
+            (policy-kw-quote-fix-edits models) (policy-docstring-fix-edits models))))
+
+(defun comment-free-line-tail-p (src s)
+  "T when the text from the start of S's line up to S can be followed by more
+text on that same line: no `;` line comment and no string left open. Joining the
+line's closing parent onto such a tail is safe; joining it onto a comment or a
+string would swallow the parent."
+  (let ((i (1- s)) (in-string nil) (ok t))
+    ;; I starts on the newline that ends the previous line; the scan runs from
+    ;; there back to that line's start.
+    (loop
+      (when (<= i 0) (return))
+      (decf i)
+      (let ((c (char src i)))
+        (cond ((char= c #\Newline) (return))
+              ((char= c #\") (setf in-string (not in-string)))
+              ((and (char= c #\;) (not in-string)) (setf ok nil)))))
+    (and ok (not in-string))))
 
 (defun expand-deletion (src start end)
   "Widen a deletion [START,END) over the whitespace it leaves behind. The span is
 first trimmed to the form's own text (a node's START/END include trivia the reader
 consumed), then the form's line indentation is taken, and the newline too when the
-form stood alone on its line. Never crosses into another line's text.
+form stood alone on its line - the one after it, or the one before it when what
+follows is the enclosing form's closing parent, which would otherwise be left on
+a line of its own. Never crosses into another line's text.
 Returns (values START END)."
   (let ((s start) (e (min end (length src))))
     (loop while (and (< s e) (member (char src s) '(#\Space #\Tab #\Newline #\Return #\Page)))
@@ -277,9 +296,13 @@ Returns (values START END)."
     (loop while (and (> s 0) (member (char src (1- s)) '(#\Space #\Tab))) do (decf s))
     (let ((n (length src)))
       (loop while (and (< e n) (member (char src e) '(#\Space #\Tab))) do (incf e))
-      (when (and (< e n) (char= (char src e) #\Newline)
-                 (or (zerop s) (char= (char src (1- s)) #\Newline)))
-        (incf e)))
+      (cond
+        ((and (< e n) (char= (char src e) #\Newline)
+              (or (zerop s) (char= (char src (1- s)) #\Newline)))
+         (incf e))
+        ((and (> s 0) (char= (char src (1- s)) #\Newline) (< e n)
+              (comment-free-line-tail-p src s))
+         (decf s))))
     (values s e)))
 
 (defun fix-file (src edits)

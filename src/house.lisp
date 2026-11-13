@@ -14,7 +14,6 @@
 ;;;;      keywords in unevaluated syntax positions: defclass :initarg names,
 ;;;;      case clause keys, member type specifiers, quoted configuration data,
 ;;;;      and macro metadata the macro quotes itself."
-;;;;   - "Give functions and macros documentation strings."
 ;;;;
 ;;;; Every row is (a plist): name, matcher, severity, default, fix, opt-out,
 ;;;; message. The engine has one matcher per KIND (call-heads, lambda-arity,
@@ -46,12 +45,10 @@
          :severity :note :default t :fix nil
          :message "~A ~A has ~D required positional parameters; the project's style uses keyword arguments for four or more"
          :description "a lambda list with more than 3 required positional parameters; the project's style uses keyword arguments for four or more (not auto-fixed: an API change; tune with `threshold positional-arity-limit N`)")
-   (list :name "missing-docstring" :matcher :docstring
-         :definers '("DEFUN" "DEFMETHOD" "DEFMACRO" "DEFCLASS")
-         :severity :note :default t :fix nil :opt-out t
-         :opt-out-patterns '("tests")
-         :message "~A ~A has no documentation string; the project's style requires one"
-         :description "a DEFUN/DEFMETHOD/DEFMACRO/DEFCLASS with no documentation string (not auto-fixed: writing it is the author's job; test trees are opted out by default, tune with `opt-out missing-docstring GLOB`)")
+   (list :name "docstring" :matcher :docstring
+         :severity :note :default t :fix t :opt-out t
+         :message "~A ~A has a documentation string; this code base carries none"
+         :description "a documentation string in a DEFUN/DEFMETHOD/DEFMACRO/DEFGENERIC/DEFCLASS/DEFINE-* form, the doc argument of a DEFVAR/DEFPARAMETER, or a (:documentation ...) option in a class, generic function or slot (auto-fixed: the string is deleted, and only the string: a DEFVAR/DEFPARAMETER keeps its value argument; the fix is refused where the string is the only body form, because deleting it changes the return value. Tune with `opt-out docstring GLOB`)")
    (list :name "keyword-quoting" :matcher :kw-value-quote
          :severity :note :default t :fix t :opt-out t
          :message "keyword value ~A directly follows the keyword-argument name ~A; the project's style quotes it as ~A"
@@ -153,27 +150,132 @@ lambda-list keyword. A (var init) pair is optional, so it is not counted."
                                        (string-downcase (node-head node)) (definer-name node) n))
               out)))))
 
-(defun definer-docstring-p (node)
-  (let* ((h (node-head node)) (items (node-items node)))
-    (cond
-      ((string= h "DEFCLASS")
-       (let ((d (nth 4 items))) (and d (eq (node-kind d) :string))))
-      (t (let ((ll (definer-lambda-list-node node)))
-           (when ll
-             (let* ((pos (position ll items)) (next (and pos (nth (1+ pos) items))))
-               (and next (eq (node-kind next) :string)))))))))
+;;; Documentation strings are dead weight here, so the rule finds every one and
+;;; `fix` deletes it. A string is a documentation string only where Common Lisp
+;;; gives it that role: the form after the lambda list of a function-like
+;;; definer, the form after the slot list of a class-like one, the third
+;;; argument of a DEFVAR/DEFPARAMETER, or a (:documentation ...) option (with
+;;; the slot spelling :documentation "..." handled too). Deleting one is
+;;; provably safe everywhere except a function body that is the string alone:
+;;; a bodyless DEFUN returns NIL, so that site is reported and the fix is
+;;; refused. Some definers have no body at all (DEFCLASS, DEFGENERIC,
+;;; DEFINE-CONDITION), so their docstring is never the return value.
+
+(defparameter *option-docstring-definers* '("DEFCLASS" "DEFGENERIC" "DEFINE-CONDITION")
+  "Definers whose documentation may also be a (:documentation ...) option or a
+slot's :documentation pair. None of them has a body, so their documentation
+string is never the return value and deleting it is always safe.")
+
+(defun docstring-definer-p (h)
+  "T when H is a definer that documents itself: DEFUN, DEFMETHOD, DEFMACRO,
+DEFGENERIC, DEFCLASS, DEFVAR, DEFPARAMETER, or any DEFINE-* form."
+  (and h
+       (or (member h '("DEFUN" "DEFMETHOD" "DEFMACRO" "DEFGENERIC" "DEFCLASS" "DEFSUBST"
+                       "DEFVAR" "DEFPARAMETER")
+                   :test #'string=)
+           (and (> (length h) 7) (string= "DEFINE-" h :end2 7)))))
+
+(defun documentation-option-node-p (n)
+  "T when N is a (:documentation ...) option form."
+  (and n (eq (node-kind n) :list)
+       (keywordp (car (node-form n)))
+       (string= (node-head n) "DOCUMENTATION")))
+
+(defun docstring-slot-list (node)
+  "The slot list of class-like definer NODE, when it has one."
+  (let ((c (nth 3 (node-items node))))
+    (and c (eq (node-kind c) :list) c)))
+
+(defun slot-documentation-pair (slot)
+  "The keyword and string nodes of slot definition SLOT's :documentation pair."
+  (let ((items (node-items slot)))
+    (loop for i from 1 below (1- (length items))
+          for k = (nth i items)
+          when (and (eq (node-kind k) :symbol)
+                    (keywordp (node-form k))
+                    (string= (symbol-name (node-form k)) "DOCUMENTATION")
+                    (eq (node-kind (nth (1+ i) items)) :string))
+            return (list k (nth (1+ i) items)))))
+
+(defun list-form-node-p (n)
+  "T when N is parenthesised, the empty list included: `()` reads as the symbol
+NIL, so its node is a :symbol, not a :list."
+  (and n
+       (or (eq (node-kind n) :list)
+           (and (eq (node-kind n) :symbol)
+                (null (node-form n))
+                (let ((raw (node-raw n)))
+                  (and raw (plusp (length raw)) (char= (char raw 0) #\()))))))
+
+(defun docstring-sites (node)
+  "Every documentation site in definer NODE, each as (FIRST LAST ONLY-BODY-P):
+the text to delete spans node FIRST through node LAST, and ONLY-BODY-P says the
+deletion would change the definition's return value."
+  (let ((h (node-head node)) (items (node-items node)) (sites nil))
+    (if (member h '("DEFVAR" "DEFPARAMETER") :test #'string=)
+        ;; (defvar name value "doc"): the string can only be the doc argument
+        ;; here, and dropping it leaves the value untouched.
+        (let ((d (nth 3 items)))
+          (when (and d (eq (node-kind d) :string))
+            (push (list d d nil) sites)))
+        (let ((i (loop for i from 3 below (length items)
+                        when (and (eq (node-kind (nth i items)) :string)
+                                  (list-form-node-p (nth (1- i) items)))
+                          return i)))
+          (when i
+            (push (list (nth i items) (nth i items)
+                        (and (null (nth (1+ i) items))
+                             (not (member h *option-docstring-definers* :test #'string=))))
+                  sites))))
+    (when (member h *option-docstring-definers* :test #'string=)
+      (dolist (c (cddr items))
+        (when (eq (node-kind c) :list)
+          (if (documentation-option-node-p c)
+              (push (list c c nil) sites)
+              (dolist (o (cdr (node-items c)))
+                (when (documentation-option-node-p o) (push (list o o nil) sites))))))
+      (let ((slots (docstring-slot-list node)))
+        (when slots
+          (dolist (slot (node-items slots))
+            (when (eq (node-kind slot) :list)
+              (let ((pair (slot-documentation-pair slot)))
+                (when pair (push (list (first pair) (second pair) nil) sites))))))))
+    (nreverse sites)))
+
+(defun docstring-edit (model rule first last)
+  "The splice that deletes the documentation spanning FIRST through LAST."
+  (let* ((src (file-model-src model))
+         (s (nth-value 0 (node-span src first)))
+         (e (nth-value 1 (node-span src last))))
+    (make-edit :path (file-model-path model) :line (node-line first)
+               :rule rule :start s :end e :text "")))
+
+(defun propose-docstring (row model node ctx)
+  "Proposals for every documentation site in NODE. The rule's own predicate:
+CHECK emits these, and the fix applies their edits, so the two cannot disagree."
+  (declare (ignore ctx))
+  (let ((h (node-head node)) (rule (getf row :name)))
+    (when (and (docstring-definer-p h)
+               (not (gethash node (fm-quoted-nodes model))))
+      (let ((msg (format nil (getf row :message)
+                         (string-downcase h) (definer-name node)))
+            (severity (getf row :severity))
+            (path (file-model-path model))
+            (out nil))
+        (dolist (site (docstring-sites node))
+          (destructuring-bind (first last only-body) site
+            (if only-body
+                (progn
+                  (record-fix-refusal path (node-line first) rule
+                                      "the documentation string is the only body form, so deleting it would change the return value")
+                  (push (list rule severity (node-line first) (node-col first) msg nil) out))
+                (push (list rule severity (node-line first) (node-col first) msg
+                            (list (docstring-edit model rule first last)))
+                      out))))
+        (nreverse out)))))
 
 (defun match-docstring (row node model ctx out)
-  (declare (ignore ctx))
-  (when (and (member (node-head node) (getf row :definers) :test #'string=)
-             (not (gethash node (fm-quoted-nodes model))))
-    (let ((ll (definer-lambda-list-node node)))
-      (when (and ll (not (definer-docstring-p node)))
-        (emit (make-diagnostic (getf row :name) (getf row :severity)
-                               (file-model-path model) (node-line node) (node-col node)
-                               (format nil (getf row :message)
-                                       (string-downcase (node-head node)) (definer-name node)))
-              out)))))
+  (emit-proposals (propose-docstring row model node ctx) model out))
 
 ;;; A keyword in an EVALUATED keyword-value position self-evaluates, so :X and
 ;;; ':X are the same value there. The fix inserts one ' immediately before the
@@ -380,6 +482,24 @@ are the same function in Common Lisp, so the rename is provably a no-op."
             (dolist (node (fm-list-nodes m))
               (setf edits (append (proposal-edits (propose-kw-value-quote row node m ctx))
                                   edits)))))))
+    edits))
+
+;;; --------------------------------------------------------------- fix (docstring)
+;;; Delete each documentation string the rule reports, and nothing else: a
+;;; DEFVAR/DEFPARAMETER keeps its value argument, a slot keeps its other
+;;; options, a class keeps its options. The edits come from the rule's own
+;;; proposal function - the same one CHECK emits from - so a finding and its
+;;; rewrite cannot disagree, and a site the rule refuses (the only body form)
+;;; contributes none.
+
+(defun policy-docstring-fix-edits (models)
+  (let ((row (policy-row "docstring")) (edits nil))
+    (when (getf row :fix)
+      (dolist (m models)
+        (unless (policy-opt-out-p row (file-model-path m))
+          (dolist (node (fm-list-nodes m))
+            (setf edits (append (proposal-edits (propose-docstring row m node nil))
+                                edits))))))
     edits))
 
 ;;; ----------------------------------------------------------- rule registry
